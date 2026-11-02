@@ -2,6 +2,8 @@ package dispatcher;
 
 import dispatcher.policies.Policy;
 import driver.Driver;
+import driver.Message;
+import logbook.EventType;
 import trip.Trip;
 
 import java.util.*;
@@ -29,8 +31,10 @@ public class Dispatcher {
      */
     private final List<Trip> readyLine = new LinkedList<>();
 
-    // TODO: add the other fields you need, such as the waiting list, the list of finished trips, and what you need to
-    //  count stretch lengths
+    private final List<Trip> waitingList = new ArrayList<>();
+    private final List<Trip> finished = new ArrayList<>();
+    private int lastDispatchTick;
+    private int stretchLength;
 
     /**
      * Creates a dispatcher for the given driver and sets the driver's dispatcher to this new dispatcher
@@ -74,7 +78,51 @@ public class Dispatcher {
      * starting again. The current tick number is {@code driver.getClock().getTickNum()}.
      */
     public void dispatch() {
-        // TODO
+        int tick = driver.getClock().getTickNum();
+        if (current != null) {
+            // Only the ticks between dispatcher visits were spent driving.
+            stretchLength += Math.max(0, tick - lastDispatchTick - 1);
+        }
+        lastDispatchTick = tick;
+
+        Queue<Message> messages = driver.getMessageQueue();
+        while (!messages.isEmpty()) {
+            Message message = messages.poll();
+            if (message.type() == Message.Type.GREEN_LIGHT) {
+                for (int i = 0; i < waitingList.size(); i++) {
+                    Trip trip = waitingList.get(i);
+                    if (trip.getVehicle().id() == message.vehicleId()) {
+                        waitingList.remove(i);
+                        readyLine.add(trip);
+                        break;
+                    }
+                }
+            } else if (current != null) {
+                current.saveProgress(driver.getNextAddress(), stretchLength);
+                switch (message.type()) {
+                    case STOP_SIGN, TIMER -> readyLine.add(current);
+                    case RED_LIGHT -> waitingList.add(current);
+                    case DESTINATION -> {
+                        finished.add(current);
+                        driver.getLogbook().record(current.getVehicle(), EventType.TRIP_COMPLETE);
+                    }
+                }
+                current = null;
+            }
+        }
+
+        if (current == null) {
+            if (!readyLine.isEmpty()) {
+                current = policy.pickNext(Collections.unmodifiableList(readyLine));
+                readyLine.remove(current);
+                stretchLength = 0;
+                int timeSlice = policy.timeSlice();
+                if (timeSlice > 0) {
+                    driver.startTimer(timeSlice);
+                }
+            }
+            driver.setTrip(current);
+        }
     }
 
     /**
@@ -92,7 +140,8 @@ public class Dispatcher {
      * @param trip the Trip to add
      */
     public void addNewTrip(Trip trip) {
-        // TODO
+        readyLine.add(trip);
+        driver.getLogbook().record(trip.getVehicle(), EventType.TRIP_START);
     }
 
     /**
@@ -102,8 +151,7 @@ public class Dispatcher {
      * @return the total number of unfinished trips
      */
     public int getNumTrips() {
-        // TODO
-        return 0;
+        return readyLine.size() + waitingList.size() + (current == null ? 0 : 1);
     }
 
     /**
@@ -112,8 +160,7 @@ public class Dispatcher {
      * @return the number of trips in the ready line
      */
     public int getReadyLineSize() {
-        // TODO
-        return 0;
+        return readyLine.size();
     }
 
     /**
@@ -122,8 +169,7 @@ public class Dispatcher {
      * @return the number of trips in the waiting list
      */
     public int getWaitingListSize() {
-        // TODO
-        return 0;
+        return waitingList.size();
     }
 
     /**
@@ -132,7 +178,6 @@ public class Dispatcher {
      * @return the list of finished trips.
      */
     public List<Trip> getFinished() {
-        // TODO
-        return null;
+        return finished;
     }
 }
