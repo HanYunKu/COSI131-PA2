@@ -1,9 +1,12 @@
 package trip;
 
 import driver.Driver;
+import driver.Message;
+import logbook.EventType;
 import trip.stoppoints.StopPoint;
 
 import java.util.Map;
+import java.util.LinkedHashMap;
 
 /**
  * A tunnel: a road that every driver in the city shares. Similar to a critical section guarding a shared resource.
@@ -21,8 +24,8 @@ public class Tunnel extends Road {
 
     private final Map<Vehicle.Type, Integer> capacities;
 
-    // TODO: add the fields you need, such as the vehicles in the tunnel and the vehicles (with their drivers) waiting
-    //  to enter
+    private final Map<Vehicle, Driver> vehiclesInside = new LinkedHashMap<>();
+    private final Map<Vehicle, Driver> waitingVehicles = new LinkedHashMap<>();
 
     /**
      * Creates a tunnel.
@@ -55,8 +58,24 @@ public class Tunnel extends Road {
      * @return true if the vehicle entered the tunnel, otherwise false
      */
     @Override
-    public boolean enter(Driver driver, Vehicle vehicle) {
-        // TODO
+    public synchronized boolean enter(Driver driver, Vehicle vehicle) {
+        boolean canEnter = vehiclesInside.size() < capacities.get(vehicle.type());
+        for (Vehicle inside : vehiclesInside.keySet()) {
+            if (inside.type() != vehicle.type()) {
+                canEnter = false;
+                break;
+            }
+        }
+
+        if (canEnter) {
+            vehiclesInside.put(vehicle, driver);
+            driver.getLogbook().record(vehicle, this, EventType.TUNNEL_ENTER);
+            return true;
+        }
+
+        driver.getLogbook().record(vehicle, this, EventType.TUNNEL_ENTER_FAILED);
+        waitingVehicles.put(vehicle, driver);
+        driver.sendMessage(new Message(vehicle.id(), Message.Type.RED_LIGHT));
         return false;
     }
 
@@ -72,8 +91,23 @@ public class Tunnel extends Road {
      * @param vehicle the vehicle exiting the tunnel
      */
     @Override
-    public void exit(Driver driver, Vehicle vehicle) {
-        // TODO
+    public synchronized void exit(Driver driver, Vehicle vehicle) {
+        if (!vehiclesInside.containsKey(vehicle)) {
+            return;
+        }
+        vehiclesInside.remove(vehicle);
+        driver.getLogbook().record(vehicle, this, EventType.TUNNEL_EXIT);
+        if (stopPoint != null) {
+            stopPoint.goThrough(driver, vehicle);
+        }
+
+        for (Map.Entry<Vehicle, Driver> entry : waitingVehicles.entrySet()) {
+            Vehicle waitingVehicle = entry.getKey();
+            Driver waitingDriver = entry.getValue();
+            waitingDriver.getClock().setAlarm(1, () -> waitingDriver.sendMessage(
+                    new Message(waitingVehicle.id(), Message.Type.GREEN_LIGHT)));
+        }
+        waitingVehicles.clear();
     }
 
     public Map<Vehicle.Type, Integer> getCapacities() {
